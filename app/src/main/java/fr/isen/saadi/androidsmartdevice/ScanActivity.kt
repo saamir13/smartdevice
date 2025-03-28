@@ -150,6 +150,11 @@ class ScanActivity : ComponentActivity() {
         }
     }
 
+    override fun onStop() {
+        super.onStop()
+        stopScan()
+    }
+
     @SuppressLint("MissingPermission")
     private fun stopScan() {
         isScanning = false

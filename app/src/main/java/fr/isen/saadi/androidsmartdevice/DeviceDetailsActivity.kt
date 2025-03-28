@@ -15,10 +15,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import java.util.UUID
 
 class DeviceDetailsActivity : ComponentActivity() {
     private var bluetoothGatt: BluetoothGatt? = null
     private var bluetoothDevice: BluetoothDevice? = null
+    var stock1: UUID? = null // UUID du bouton 1
+    var stock2: UUID? = null // UUID du bouton 3
 
     @SuppressLint("MissingPermission")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,6 +40,13 @@ class DeviceDetailsActivity : ComponentActivity() {
             // États pour les compteurs des boutons physiques
             var button1Count by remember { mutableStateOf("") }
             var button3Count by remember { mutableStateOf("") }
+
+            // État pour la gestion des notifications
+            var notificationsEnabledButton1 by remember { mutableStateOf(false) }
+            var notificationsEnabledButton3 by remember { mutableStateOf(false) }
+
+
+
 
             LaunchedEffect(device) {
                 device?.let { bluetoothDevice = it }
@@ -60,9 +70,12 @@ class DeviceDetailsActivity : ComponentActivity() {
                 onConnectClick = {
                     bluetoothDevice?.let { device ->
                         if (!isConnected) {
-                            connectToDevice(device, context, { btn1, btn3 ->
-                                button1Count = btn1.toString()
-                                button3Count = btn3.toString()
+                            connectToDevice(device, context, { value, isButton1 ->
+                                if (isButton1) {
+                                    button1Count = value
+                                } else {
+                                    button3Count = value
+                                }
                             })
                             isConnected = true
                         }
@@ -73,7 +86,11 @@ class DeviceDetailsActivity : ComponentActivity() {
                     isConnected = false
                     Toast.makeText(context, "Déconnecté de l'appareil", Toast.LENGTH_SHORT).show()
                 },
-                isConnected = isConnected
+                isConnected = isConnected,
+                notificationsEnabledButton1 = notificationsEnabledButton1,
+                notificationsEnabledButton3 = notificationsEnabledButton3,
+                onNotificationsToggleButton1 = { notificationsEnabledButton1 = !notificationsEnabledButton1 },
+                onNotificationsToggleButton3 = { notificationsEnabledButton3 = !notificationsEnabledButton3 }
             )
         }
     }
@@ -82,7 +99,7 @@ class DeviceDetailsActivity : ComponentActivity() {
     private fun connectToDevice(
         device: BluetoothDevice,
         context: Context,
-        updateCounts: (Int, Int) -> Unit
+        updateCounts: (String, Boolean) -> Unit
     ) {
         val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
 
@@ -108,6 +125,9 @@ class DeviceDetailsActivity : ComponentActivity() {
                     // Service 3, Caractéristique 2 (Bouton principal)
                     val service3 = gatt?.services?.getOrNull(2)
                     service3?.characteristics?.getOrNull(1)?.let { characteristic ->
+                        // Stocker l'UUID du bouton principal dans stock1
+                        stock1 = characteristic.uuid
+
                         gatt.setCharacteristicNotification(characteristic, true)
                         characteristic.descriptors?.getOrNull(0)?.let { descriptor ->
                             descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
@@ -118,6 +138,9 @@ class DeviceDetailsActivity : ComponentActivity() {
                     // Service 2, Caractéristique 1 (Troisième bouton)
                     val service2 = gatt?.services?.getOrNull(1)
                     service2?.characteristics?.getOrNull(0)?.let { characteristic ->
+                        // Stocker l'UUID du troisième bouton dans stock2
+                        stock2 = characteristic.uuid
+
                         gatt.setCharacteristicNotification(characteristic, true)
                         characteristic.descriptors?.getOrNull(0)?.let { descriptor ->
                             descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
@@ -127,23 +150,41 @@ class DeviceDetailsActivity : ComponentActivity() {
                 }
             }
 
-            override fun onCharacteristicChanged(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?) {
-                characteristic?.let {
-                    if (it.value != null && it.value.size >= 2) {
-                        // Lier les états des boutons (inverser les indices si nécessaire)
-                        val btn1State = it.value[1].toInt() // Bouton principal
-                        val btn3State = it.value[0].toInt() // Troisième bouton
 
-                        runOnUiThread {
-                            updateCounts(btn1State, btn3State) // Mettre à jour les compteurs avec les états des boutons
-                        }
-                    }
-                }
+
+            override fun onCharacteristicChanged(
+                gatt: BluetoothGatt,
+                characteristic: BluetoothGattCharacteristic,
+                value: ByteArray
+            ) {
+                super.onCharacteristicChanged(gatt, characteristic, value)
+                charact(characteristic, value, updateCounts)
             }
+
+            @Deprecated("Deprecated in Java")
+            override fun onCharacteristicChanged(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?) {
+                super.onCharacteristicChanged(gatt, characteristic)
+                charact(characteristic, characteristic?.value, updateCounts)
+            }
+
         })
     }
 
-    @SuppressLint("MissingPermission")
+    private fun charact(
+        characteristic: BluetoothGattCharacteristic?,
+        value: ByteArray?,
+        updateCounts: (String, Boolean) -> Unit
+    ) {
+        if (characteristic != null && value != null) {
+            updateCounts(value[0].toInt().toString(), characteristic.uuid == stock2)
+
+        }
+
+    }
+
+
+
+@SuppressLint("MissingPermission")
     private fun sendLedCommand(ledId: Int, state: Boolean) {
         bluetoothGatt?.let { gatt ->
             val service = gatt.services.getOrNull(2)
@@ -173,7 +214,11 @@ fun DeviceDetailsScreen(
     onLedToggle: (Int) -> Unit,
     onConnectClick: () -> Unit,
     onDisconnectClick: () -> Unit,
-    isConnected: Boolean
+    isConnected: Boolean,
+    notificationsEnabledButton1: Boolean,
+    notificationsEnabledButton3: Boolean,
+    onNotificationsToggleButton1: () -> Unit,
+    onNotificationsToggleButton3: () -> Unit
 ) {
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         Column(
@@ -210,8 +255,48 @@ fun DeviceDetailsScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            Text(text = "Bouton Principal : $button1Count clics")
-            Text(text = "Troisième Bouton : $button3Count clics")
+            // Afficher les compteurs uniquement si les notifications sont activées pour chaque bouton
+            if (notificationsEnabledButton1) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                ) {
+                    Text(text = "Bouton Principal : $button1Count clics")
+                    Button(
+                        onClick = { onNotificationsToggleButton1() },
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    ) {
+                        Text("Désactiver Notification Bouton 1")
+                    }
+                }
+            }
+
+            if (notificationsEnabledButton3) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                ) {
+                    Text(text = "Troisième Bouton : $button3Count clics")
+                    Button(
+                        onClick = { onNotificationsToggleButton3() },
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    ) {
+                        Text("Désactiver Notification Bouton 3")
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Ajout du switch pour activer/désactiver les notifications pour chaque bouton
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = "Notifications Bouton 1")
+                Switch(checked = notificationsEnabledButton1, onCheckedChange = { onNotificationsToggleButton1() })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = "Notifications Bouton 3")
+                Switch(checked = notificationsEnabledButton3, onCheckedChange = { onNotificationsToggleButton3() })
+            }
         }
     }
 }
